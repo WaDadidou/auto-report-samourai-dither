@@ -1,0 +1,20 @@
+{
+  "name": "auto-report",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "npx ts-node index.ts"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "dayjs": "^1.11.13",
+    "dotenv": "^17.2.0",
+    "octokit": "^5.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.13"
+  }
+}
