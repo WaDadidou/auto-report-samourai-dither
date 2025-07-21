@@ -3,9 +3,9 @@ import dayjs from "dayjs";
 import isBetween from "dayjs/plugin/isBetween";
 import advancedFormat from "dayjs/plugin/advancedFormat";
 import * as dotenv from "dotenv";
-import { EXCLUDED_USERS, READY_REVIEW_LABEL, REPO } from "./constants";
+import { ISSUE_OPENED_LABEL, PR_IN_PROGRESS_LABEL, PR_MERGED_LABEL, PR_WAITING_REVIEW_LABEL, READY_REVIEW_GITHUB_LABEL, REPO } from "./constants";
 import { PullRequest, Issue } from "./types";
-import { formatDateRange, hasLabel, isExcludedUser, lastMonday, nextMonday, thisMonday } from "./utils";
+import { formatDateRange, formatMarkdownToSignalReport, hasLabel, lastMonday, nextMonday, thisMonday } from "./utils";
 
 dayjs.extend(isBetween);
 dayjs.extend(advancedFormat);
@@ -17,6 +17,19 @@ const [owner, repo] = REPO.split("/");
 
 // Initialize Octokit with GitHub token
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
+
+// Check if a user belongs to the samouraiworld organization
+async function isSamouraiMember(userLogin: string): Promise<boolean> {
+  try {
+    await octokit.rest.orgs.checkMembershipForUser({
+      org: "samouraiworld",
+      username: userLogin,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // Fetch pull requests from GitHub using Octokit
 async function fetchPRs(): Promise<PullRequest[]> {
@@ -31,7 +44,7 @@ async function fetchPRs(): Promise<PullRequest[]> {
   return response.data;
 }
 
-// Fetch issues from GitHub (excluding pull requests)
+// Fetch issues from GitHub 
 async function fetchIssues(): Promise<Issue[]> {
   const response = await octokit.request("GET /repos/{owner}/{repo}/issues", {
     owner,
@@ -41,7 +54,7 @@ async function fetchIssues(): Promise<Issue[]> {
     per_page: 100,
   });
 
-  // Filter out pull requests (issues with a pull_request field)
+  // Filter out pull requests
   return response.data.filter((issue: any) => !issue.pull_request);
 }
 
@@ -50,65 +63,82 @@ async function fetchIssues(): Promise<Issue[]> {
   const prs = await fetchPRs();
   const issues = await fetchIssues();
 
-  // PRs merged between last Monday and next Monday
-  const mergedThisWeek = prs.filter(pr => {
-    if (!pr.merged_at) return false;
-    if (isExcludedUser(pr.user.login)) return false;
-    const mergedAt = dayjs(pr.merged_at);
-    return mergedAt.isBetween(lastMonday, nextMonday, null, "[)");
-  });
+  // ---- PRs
+  const mergedThisWeek: PullRequest[] = [];
+  const waitingReview: PullRequest[] = [];
+  const inProgress: PullRequest[] = [];
 
-  // PRs waiting for review (open, not draft, not merged, not from excluded user, not updated today)
-  const waitingReview = prs.filter(pr => {
-    if (pr.state !== "open" || pr.draft || pr.merged_at) return false;
-    if (isExcludedUser(pr.user.login)) return false;
-    if (!hasLabel(pr, READY_REVIEW_LABEL)) return false;
-    const updatedAt = dayjs(pr.updated_at);
-    return updatedAt.isBefore(dayjs().subtract(1, "day"));
-  });
+  for (const pr of prs) {
+    const userLogin = pr.user?.login;
+    if (!userLogin || !(await isSamouraiMember(userLogin))) continue;
 
-  // Draft PRs in progress (not from excluded users)
-  const inProgress = prs.filter(pr => {
-    if (pr.state !== "open") return false;
-    if (isExcludedUser(pr.user.login)) return false;
     const createdAt = dayjs(pr.created_at);
-    if (createdAt.isBefore(lastMonday)) return false;
-    return !hasLabel(pr, READY_REVIEW_LABEL);
-  });
+    const mergedAt = pr.merged_at ? dayjs(pr.merged_at) : null;
 
-  // Open issues created this week, excluding excluded users
-  const issuesOpened = issues.filter(issue => !isExcludedUser(issue.user?.login || ""));
+    // PRs merged
+    if (mergedAt && mergedAt.isBetween(lastMonday, nextMonday, null, "[)")) {
+      mergedThisWeek.push(pr);
+      continue;
+    }
 
-  // Compose markdown report
+    if (pr.state !== "open" || pr.merged_at) {
+      continue;
+    }
+
+    // PRs in progress including drafts
+    if (!hasLabel(pr, READY_REVIEW_GITHUB_LABEL) && createdAt.isBetween(lastMonday, nextMonday, null, "[)")) {
+      inProgress.push(pr);
+      continue;
+    }
+
+    if (pr.draft) {
+      continue;
+    }
+
+    // PRs waiting for review
+    if (hasLabel(pr, READY_REVIEW_GITHUB_LABEL) && createdAt.isBetween(lastMonday, nextMonday, null, "[)")) {
+      waitingReview.push(pr);
+      continue;
+    }
+  }
+
+  // ---- ISSUES
+  const issuesOpened: Issue[] = [];
+  for (const issue of issues) {
+    const login = issue.user?.login;
+    if (!login) continue;
+    if (!(await isSamouraiMember(login))) continue;
+    issuesOpened.push(issue);
+  }
+
+  // ---- Compose markdown report
   let markdownMessage = "";
 
   if (mergedThisWeek.length) {
-    markdownMessage += `- PR Merged ✅\n`;
+    markdownMessage += `${PR_MERGED_LABEL}\n`;
     for (const pr of mergedThisWeek) {
       markdownMessage += `    - **${pr.title}** https://github.com/${REPO}/pull/${pr.number} ${pr.user.login}\n`;
     }
   }
 
   if (waitingReview.length) {
-    markdownMessage += `- PR Waiting for Review ⚠️\n`;
+    markdownMessage += `${PR_WAITING_REVIEW_LABEL}\n`;
     for (const pr of waitingReview) {
       markdownMessage += `    - **${pr.title}** https://github.com/${REPO}/pull/${pr.number} ${pr.user.login}\n`;
     }
   }
 
   if (inProgress.length) {
-    markdownMessage += `- PR In Progress 🚧\n`;
+    markdownMessage += `${PR_IN_PROGRESS_LABEL}\n`;
     for (const pr of inProgress) {
       markdownMessage += `    - **${pr.title}** https://github.com/${REPO}/pull/${pr.number} ${pr.user.login}\n`;
     }
   }
 
   if (issuesOpened.length) {
-    markdownMessage += `- Issues Opened ❗\n`;
+    markdownMessage += `${ISSUE_OPENED_LABEL}\n`;
     for (const issue of issuesOpened) {
-      if(issue.user) {
-        markdownMessage += `    - **${issue.title}** https://github.com/${REPO}/issues/${issue.number} ${issue.user.login}\n`;
-      } 
+      markdownMessage += `    - **${issue.title}** https://github.com/${REPO}/issues/${issue.number} ${issue.user!.login}\n`;
     }
   }
 
@@ -116,19 +146,20 @@ async function fetchIssues(): Promise<Issue[]> {
     markdownMessage = "- No items to report this week.";
   }
 
-  // Print Markdown version
-  console.log("Markdown Report:\n", markdownMessage);
+  // Print Markdown report
+  console.log("----------------------------------\nMarkdown Report\n----------------------------------\n", markdownMessage + "\n----------------------------------");
 
-  // Compose Signal version (plain text)
+  // ---- Compose Signal report
   const signalReportHeader =
     `Here's the weekly report on the Samourai team's contributions 🥷\n` +
     `${formatDateRange(lastMonday, thisMonday)}\n\n` +
     `Dither:\n\n`;
 
-  const signalReportFooter = `\nHave a nice week! ✨`;
+  const signalReportFooter = `\n\nHave a nice week! ✨\n----------------------------------`;
 
+  // Print Signal report (Plain text)
   console.log(
-    "\nSignal report:\n",
-    signalReportHeader + markdownMessage.replace(/\*\*/g, "") + signalReportFooter
+    "Signal report:\n----------------------------------\n",
+    signalReportHeader + formatMarkdownToSignalReport(markdownMessage) + signalReportFooter
   );
 })();

@@ -1,3 +1,6 @@
 export const REPO = "allinbits/dither-service"
-export const EXCLUDED_USERS = ["Stuyk"];
-export const READY_REVIEW_LABEL = "Ready 4 Review"
+export const READY_REVIEW_GITHUB_LABEL = "Ready 4 Review"
+export const PR_MERGED_LABEL = "- PRs Merged ✅"
+export const PR_WAITING_REVIEW_LABEL = "- PRs Waiting for Review ⚠️"
+export const PR_IN_PROGRESS_LABEL = "- PRs In Progress 🚧"
+export const ISSUE_OPENED_LABEL = "- Issues Opened ❗"
